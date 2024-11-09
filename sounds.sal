@@ -1,0 +1,166 @@
+
+if not(boundp(quote(a-snd))) then
+  set a-snd = s-read("./celesta.aiff")
+
+;;; FINDING ZERO CROSSINGS, SND-SAMPLES
+
+set max-samples-for-zeros = 1000
+
+define function zeros(snd)
+  begin
+    ; start by getting the samples, only take 1000 samples max
+    with s = snd-samples(snd, max-samples-for-zeros),
+         newsign, sign, n, len, result, result2, starttime, srate
+    ; go through the array looking for zero crossings
+    set len = length(s)
+    ; stop if there are no samples
+    if len = 0 then return nil
+    set sign = 0.0 > s[0]
+    ; get the start time and sample rate of the sound for use below
+    set starttime = car(snd-extent(snd, max-samples-for-zeros))
+    set srate = snd-srate(snd)
+    set n = 1
+    loop
+      until n >= len
+      set newsign = 0.0 > s[n]
+      if not(eq(sign, newsign)) then
+        set result = cons(n, result)
+      set sign = newsign
+      set n += 1
+    end
+    ; now we have the zero crossings, convert them to times
+    loop
+      with result2 = nil
+      for num in result
+      ; return the time of the zero crossing, which is the start time
+      ; of the snd plus the sample number / srate
+      set result2 = cons(starttime + num / srate, result2)
+      finally return result2
+    end
+  end
+
+
+
+
+set z = zeros(a-snd)
+
+
+; find the differences between zero crossings reported by zeros
+; print the result in terms of samples for readability
+;
+define function periods(lis, short)
+  begin
+    with result, prev, srate
+    if null(lis) then return nil
+    set srate = snd-srate(short)
+    loop
+      set prev = car(lis)
+      set lis = cdr(lis)
+      if null(lis) then return reverse(result)
+      set result = cons(srate * car(lis) - prev, result)
+    end
+  end
+
+set p = periods(z, a-snd)
+
+
+
+
+; build a wavetable using zero crossing information
+;
+; I interactively played with the data and decided to extract from the
+; 5th period to the 21st period (these had 86 and 87 samples each and
+; seem to indicate some kind of periodicity).  The 1st period measures
+; from the zeroth zero crossing to the first, so the 5th period measures
+; from the 4th zero crossing to the 5th.  I'll arbitrarily take
+; the 4th and 20th zero crossing times (the 5th and 20th should work as
+; well), and from the data, this looks like 2 waveform periods.
+; This is very clear if you plot the data.
+;
+; arguments are:
+;  snd - the sound to extract from
+;  zeros - the result of (zeros snd)
+;  start - the number of the starting zero crossing
+;  stop - the number of the ending zero crossing
+;  n - number of periods contained in the extracted sound
+;
+define function extract-table(snd, zeros, start, stop, n)
+  begin
+    with starttime, extent, hz
+    ; Start by shifting snd to time zero:
+    set starttime = car(snd-extent(snd, max-samples-for-zeros))
+    set snd = cue(snd) @  - starttime
+
+    exec format(t, "~A~%", snd)
+    ; also get the start and stop times and shift them:
+    set start = nth(start, zeros) - starttime
+    set stop = nth(stop, zeros) - starttime
+
+    exec format(t, "table ~A start ~A stop ~A~%", snd, start, stop)
+
+    ; now extract the samples of interest, note that we are
+    ; overwriting our pointer to the snd argument
+    set snd = extract(start, stop, cue(snd))
+    exec format(t, "table now ~A~%", snd)
+
+    ; now we need to figure out the pitch this sound would represent
+    ; when played at its samplerate.  The pitch in hz is 1 / duration,
+    ; and duration is the extent of the sound / n.  Therefore, take
+    ; n/extent
+    set extent = snd-extent(snd, max-samples-for-zeros)
+    set hz = n / (cadr(extent) - car(extent))
+    ; an osc table is a list of the sound, pitch number, and T (periodic)
+    return list(snd, hz-to-step(hz), #t)
+  end
+
+
+set celesta-snd = extract-table(a-snd, z, 4, 20, 2)
+
+function syn-celesta(hz)
+  return hzosc(hz, celesta-snd)
+
+function cel-env(vel)
+  return  env(0.03, 0.07, 0.5, vel-to-linear(vel), vel-to-linear(vel) / 2, vel-to-linear(vel) / 5.0)
+
+function cel-note(pitch: 60, vel: 60, dur: 1)
+  return (hzosc(step-to-hz(pitch), celesta-snd) * cel-env(vel)) ~ dur
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ ; try it out
+;play osc(88, 1.0, celesta-snd)  * pwl(0.05, 1, 1)
+
+;play osc(cadr(celesta-snd), 1.0, celesta-snd)
+
+function elec-tube1(hz)
+  begin
+    with amp-env = pwl(0.1, 0.5, 0.9, 1, 1),
+    carrierFreq = hz,
+    modFreq = carrierFreq * 3.5,
+    modDepth = 4.8 * carrierFreq,
+    modEnv = pwl(0, 0, 1, modDepth),
+    modSignal = hzosc(modFreq) * modEnv,
+    output = fmosc(hz-to-step(carrierFreq), modSignal) * amp-env
+    return output
+  end
+
+set my-instr = elec-tube1(440)
+
+; play my-instr
+
+if not(boundp(quote(1-snd))) then
+  set 1-snd = s-read("./my-instr.wav")
+;;; FINDING ZERO CROSSINGS, SND-SAMPLES
+
+set max-samples-for-zeros = 1000
+
+set x = zeros(1-snd)
+
+set q = periods(x, 1-snd)
+
+set elec-tubesnd = extract-table(1-snd, x, 0, 10, 2)
+
+function elec-tube(hz)
+  return hzosc(hz, elec-tubesnd)
+
+

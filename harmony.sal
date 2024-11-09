@@ -1,0 +1,153 @@
+load "vectors.lsp"
+
+;; TODO:
+;; - Intonation conversion (E.T. to J.I, W.T, Pythagorean, Meantone, etc..)
+
+; Set tonal_intervals
+set tonal_intervals = list(1.0, 36 / 35.0, 15 / 14.0, 10 / 9.0, 7 / 6.0, 6 / 5.0, 5 / 4.0, 9 / 7.0, 4 / 3.0, 7 / 5.0, 10 / 7.0, 3 / 2.0, 14 / 9.0, 8 / 5.0, 5 / 3.0, 12 / 7.0, 9 / 5.0, 15 / 8.0, 35 / 18.0)
+
+set ji-intervals = list(1.0, 16.0 / 15.0, 9 / 8.0, 6 / 5.0, 5 / 4.0, 4 / 3.0, 45 / 32.0, 3 / 2.0, 8 / 5.0, 5 / 3.0, 9 / 5.0, 15 / 8.0)
+
+; Set interval names
+set intv_names = list("unison", "1/4-tone, septimal diesis", "major diatonic semitone", "minor whole tone", "septimal minor third", "minor third", "major third",
+"septimal major third", "perfect fourth", "septimal tritone", "Euler's tritone",
+"perfect fifth", "septimal minor sixth", "minor sixth", "major sixth",
+                      "septimal major sixth", "just minor seventh", "classic major seventh", "octave - septimal diesis")
+
+set ji-intv-names = list("unison", "m2", "M2" , "m3" , "M3" , "P4","tritone", "P5" , "m6" , "M6" , "m7" ,  "M7")
+
+; candidates for each ji intv to be harmonized
+set auto-harmonize = list(
+                          {{4 7 11} {5 9 16} {6 9 16} {5 8 14}}, ;unison
+                          {{5 8} {5 12}}, ; m2
+                          {{4 7 11} {6 9} {5 9 16}}, ; M2
+                          {{7 10} {7 9} {8 10} {8 12}}, ; m3 - 小三度
+                          {{7 11} {9 12} {7 14} {6 9}}, ; M3
+                          {{9 16} {8 12} {10 14} {4 9}}, ; P4
+                          {{9 14} {2 9} {4 9}}, ; tritone
+                          {{4 11} {11 16} {5 12}}, ; P5
+                          {{3 10} {3 15} {5 15} {1 5}}, ; m6
+                          {{5 12} {4 12} {6 14}}, ; M6
+                          {{3 7} {4 7} {3 8} {2 5}}, ; m7
+                          {{4 7} {7 16}} ; M7
+                         )
+
+; unison, m2, M2
+
+function get-ji-harmony(idx)
+  begin
+    with e = nth(idx, auto-harmonize)  
+    return nth(round(rrandom() * (length(e) - 1)), e)
+  end
+
+
+set eq-intervals = list(1.0, 1.05946, 1.12246, 1.18920, 1.25992, 1.33483, 1.41421, 1.49830, 1.58740, 1.68179, 1.78179, 1.88774)
+
+
+function chord(root, intervals)
+  begin    
+    set intv = intervals
+    set intv @= 0
+    return vector-offset(intv, root)
+  end
+
+function rchord(c-pitch, notes)
+  begin
+    return vector-offset(notes, c-pitch)
+  end
+
+function intv-to-ratio(intv, tuning: ji-intervals)
+  ; convert a interval (12-tone based, can go over 12)
+  begin
+    with idx = intv % 12, oct = round(intv) / 12 + 1
+    ; print "intv,", intv
+    if intv < 0 then
+      begin
+        print("Intv under 0 is not yet implemented")
+        exec throw("")
+      end
+    return oct * nth(idx, tuning)
+  end
+
+function hzchord(chord, shift-hz: 0)
+  begin
+    with out = {}
+    loop
+      for i from 0 below length(chord)
+      set out &= step-to-hz(nth(i, chord)) + shift-hz
+    end
+  return out
+  end
+
+function hz-chord(root-hz, intvs)
+  ; sorry for the poor naming. I don't want to rename all the usages now..
+  ; enter a base frequency and a list of ratios
+  ; @param intvs: list intervals (12-tone based)
+  begin
+    with out = list(root-hz)
+    loop
+      for i from 0 below length(intvs)
+      set out &= root-hz * intv-to-ratio(nth(i, intvs))
+    end
+    return out
+  end
+
+function nhz-chord(root-note, intvs, hz-shift: 0)
+  ; nhz stads for note-based hz chord. Returns a hzchord
+  ; @param root-note: root in note for
+  begin
+    with rt-hz = step-to-hz(root-note) + hz-shift, out = list(rt-hz)
+    loop
+      for i from 0 below length(intvs)
+      set out &= rt-hz * intv-to-ratio(nth(i, intvs))
+    end
+    return out
+  end
+
+function hz-chords(hz-list, intvs)
+  ; create a list of hz chords
+  begin
+    with -chords = {}
+    loop
+      for i from 0 below length(hz-list)
+      set -chords &= hz-chord(nth(i, hz-list), nth(i, intvs))
+    end
+    return -chords
+  end
+
+function ctranspose(hzcd, hz)
+  ; @param hzcd: a chord notated in hz, eg: (440, 660, 880)
+  begin
+    with out = {}
+    loop
+      for i from 0 below length(hzcd)
+      set out &= nth(i, hzcd) + hz
+    end
+    return out
+  end
+
+function test-append(a)
+  begin
+    set aa = nth(0, a)
+    set aa &= 1
+  end
+
+function snd-chord(c)
+  begin
+    with out-snd = pwl(0)
+    loop
+      for i from 0 below length(c)
+      set out-snd += osc(nth(i, c))
+    end
+    return out-snd
+  end
+
+function snd-hzchord(hzc)
+  begin
+    with out-snd = pwl(0)
+    loop
+      for i from 0 below length(hzc)
+      set out-snd += hzosc(nth(i, hzc))
+    end
+    return out-snd
+  end

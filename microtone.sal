@@ -1,0 +1,406 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Navigation through the microtonal harmonic space with 12 tone constraint
+;;
+
+;;;;;;;;;;;;;;;;;
+; Key Functions ;
+;;;;;;;;;;;;;;;;;
+; Intervals:
+; - play-intvs: play a list of intervals, separated by default IOI
+;
+; Chords:
+; - voice-lead: 
+;      perform automatic voice-leading analysis 
+;      (only support chords of the same size
+; - connect-chords: 
+;      return a sound of two chords (you can pass in your pitch synthesizer)
+;      connected by automatic voice-leading and pitch bend
+;- connect-chord-list:
+;      connect a list of chords using automatic voice-leading and pitch bend
+;;
+
+;;;;;;;;;;;;;;;
+; Quick Start ;
+;;;;;;;;;;;;;;;
+
+;### Listen to a list of intervals
+; set intv-list = {{440.17610529326595 440.0} {455.93899317874127 423.0769230769231} {468.09751418385184 411.79487179487177} {480.41044526229 400.5128205128205} {491.3986276291309 389.2307692307692} {501.48371935651187 377.94871794871796} {512.3831789169877 366.66666666666663} {530.8795479946157 349.7435897435897} {542.4647818094824 338.46153846153845} {547.6956506020282 332.8205128205128} {552.7208841666013 327.1794871794872} {563.1199387856425 315.8974358974359} {574.9289142071947 304.61538461538464}}
+; play-intvs(intv-list)
+;
+;
+;### Listen to two smoothly-connected chords (microtonal)
+; play connect-chords(hzchord(list(c4, e4, b4, d5, g5)), hzchord(list(b3, ds4, fs4, a4, e5), shift-hz: 13)
+;
+;### Play a list of smoothly-connected fifths 
+; set test-chords = list(list(440, 440 * 1.5), list(460, 460 * 1.5), list(480, 480 * 1.5))
+; play connect-chord-list(test-chords)
+;
+; Another example:
+; load "harmony.sal"
+; set c1 = rchord(60, {0 4 7 7 11})
+; set c2 = rchord(60, {2 5 9 12 12})
+; set c3 = rchord(60, {4 6 9 12 16})
+; set c4 = rchord(60, {-2 5 8 12 14})
+; set c5 = rchord(60, {-5 4 12 14 19})
+; set mychord = list(hzchord(c1), hzchord(c2, shift-hz: 13), hzchord(c3, shift-hz: -12), hzchord(c4, shift-hz: 12), hzchord(c5))
+; 
+
+;;;;;;;;
+; TODO ;
+;;;;;;;;
+; - unit tests
+; - maybe use Chowning's FM voice as synthesizer
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;
+; Here begins the codes..
+; .......................
+
+function discrete-interval-filter(arr1, arr2, vocab-list)
+  ;;; implemented in python, SAL impl later
+  return "not yet implemented"
+
+function intv-step-to-hz(intv-list, idx)
+  ;; Takes in list(list(a, b)), a is hz1, b is hz2
+  ; @param: intv-list 
+  ; @param: idx - should be 0 or 1
+  begin
+    with output = {}
+    loop
+      for i from 0 below length(intv-list)
+      set output &= hz-to-step(nth(idx, nth(i, intv-list)))
+    end
+    return output
+  end
+
+;; Some instrument functions
+function simple-env(time, ratio: 0.9)
+  return pwl(time * 0.1, 1, time * ratio, 1, time)
+
+function note(pitch: 60, dur: 1)
+  return osc(pitch) ~ dur * simple-env(dur)
+
+;; Create score
+function get-intv-subscore(intv-list, idx)
+  begin
+    with slen = length(intv-list), pat = make-cycle(intv-step-to-hz(intv-list, idx))
+    return score-gen(score-len: slen, ioi: 0.9, dur: 0.5, pitch: next(pat), name: quote(note))
+  end
+
+function play-intvs(intv-list)
+  begin
+    return score-merge(get-intv-subscore(intv-list, 0), get-intv-subscore(intv-list, 1))
+  end
+
+
+function intv(ratio, base-hz: 440)
+  begin
+    return (hzosc(base-hz) + hzosc(base-hz * ratio)) ~ 2
+  end
+
+function itchord(ratio-list, base-hz: 440)
+  begin
+    with itsound = hzosc(base-hz) ~ 2
+    loop
+      for i from 0 below length(ratio-list)
+      set itsound += hzosc(base-hz * nth(i, ratio-list)) ~ 2
+    end
+    return itsound
+  end
+
+function match-chord-pair(chord1, chord2, idx)
+  ; @param idx: positive value - arr[idx], negative value - arr[len(arr)-1+idx]
+  begin
+    if abs(idx) >= length(chord1) | abs(idx) >= length(chord2) then
+      exec throw("Error: idx exceeds array size")
+    if idx >= 0 then
+      return list(nth(idx, chord1), nth(idx, chord2))
+    else
+      return list(nth(length(chord1) + idx, chord1), nth(length(chord2) + idx, chord2))
+  end
+
+function mysort(a, b)
+  return a < b
+
+function voice-lead(chord1, chord2)
+  ; calculate voice leading relationship, returned as list of lists
+  ; @param chord1: list of frequencies
+  ; @return: hopefully a dictionary 
+  begin
+    with output-list = {}, c1 = sort(chord1, quote(mysort)), c2 = sort(chord2, quote(mysort))
+    if length(chord1) != length(chord2) then
+      exec throw("we do not support chords of different sizes yet!")
+    loop
+      with len = length(c1), rev = #t, i-bottom = 0, i-upper = -1
+      for i from 0 below len
+      ; search up and bottom
+      if i % 2 = 0 then
+        begin
+;          print("ibottom")
+          set idx-curr = i-bottom
+          set i-bottom += 1
+        end
+      else
+        begin
+;          print("iupper")
+          set idx-curr = i-upper
+          set i-upper -= 1
+        end
+      set output-list &= match-chord-pair(c1, c2, idx-curr)
+    end
+    if length(output-list) = 0 then
+      exec throw("err")
+    return output-list
+  end
+
+
+
+function connect-pitch(hz-start, hz-end, total-dur, shift-dur)
+  ; Return a pwl function that transits linearly from starting hz to ending hz
+  ; @param total-dur: total duration of the sound
+  ; @param shift-dur: total duration of the linear hz transition
+  begin
+    with middle-dur = total-dur / 2.0, middle-shift = shift-dur / 2.0
+    return pwlv(hz-start, middle-dur - middle-shift, hz-start, middle-dur + middle-shift, hz-end, total-dur, hz-end)
+  end
+
+
+function dummy-sound()
+  return hzosc(0) * pwl(0)
+
+
+function connect-chords(chord1, chord2, total-dur: 2, shift-dur: 0.2, synth: quote(hzosc))
+  ; This function connects two chords by automatic voice-leading and pitch bending (FM)
+  ; However, it can only process two chords at a time. You may need to perform cross-fade in order to create a complex chord progression
+  ; @param chord1: the first chord
+  ; @param chord2: the second chord
+  ; @param total-dur: total time the sound should be played
+  ; @param shift-dur: total time to fm from one chord to another
+  ; @param synth: the synthesizer function which must be able to take in a sound
+  begin
+    with mapping = voice-lead(chord1, chord2), i-sstart = total-dur / 2.0 - shift-dur / 2.0, i-send = total-dur / 2.0 + shift-dur / 2.0, out-sound = dummy-sound()
+    if length(chord1) != length(chord2) then
+      exec throw("We do not yet support chords with different sizes!")
+    loop
+      for i from 0 below length(mapping)
+      ; for each element in chord1, pitch shift to chord2
+      set hz-pair = nth(i, mapping)
+      ; print connect-pitch(nth(0, hz-pair), nth(1, hz-pair), total-dur, shift-dur)
+      set out-sound += funcall(synth, connect-pitch(nth(0, hz-pair), nth(1, hz-pair), total-dur, shift-dur))
+      ; TODO: for elements in chord2 that are not mapped to chord1, apply env
+    end
+    return out-sound
+  end
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Connect multiple chords ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+function _bridge-pitch(hz-start, hz-end, total-dur, shift-dur, shift-t)
+  ; Not intended to be used on its own, bridge: ____/
+  ; @param total-dur: total duration for this bridge segment (including the full FM part)
+  begin
+    return list(shift-t, hz-start, shift-t + total-dur - shift-dur, hz-start, shift-t + total-dur, hz-end)
+  end
+
+function _init-chord-pwl(mapping, shift-dur)
+  ; Not intended to be used on its own.
+  ; Init the list of hz pwl functions given mapping(voice-leading calculation result)
+  ; @param mapping: passing chord1 could be sufficient, but the mapping order can be different from chord voice order, and I hate to write another sorting function.
+  begin
+    with sft = shift-dur / 2.0, pwlist = {}
+    loop
+      for i from 0 below length(mapping)
+      set hz-pair = nth(i, mapping)
+      set pwlist &= list(0, nth(0, hz-pair), sft, nth(0, hz-pair))
+    end
+    return pwlist
+  end
+
+function _end-chord-pwl(mapping, chord-dur, shift-dur, n-chords)
+  ; Not intended to be used on its onw.
+  ; Return the final pitch curve: ------
+  ; @param n-chords: shift the output pwl given n-chords
+  begin
+    with pwlist = {}
+    loop
+      for i from 0 below length(mapping)
+      set hz-pair = nth(i, mapping), time-shift = (n-chords - 1) * chord-dur + shift-dur
+      set pwlist &= list(time-shift, nth(1, hz-pair), time-shift + chord-dur - 0.5 * shift-dur, nth(1, hz-pair))
+    end
+    return pwlist
+  end
+
+  function _end-vi-chord-pwl(mapping, chord-dur, onset-time, shift-dur, n-chords)
+  ; Not intended to be used on its onw.
+  ; Revised _end-chord-pwl so that it can take in a user-specified onset time
+  ; Return the final pitch curve: ------
+  ; @param n-chords: shift the output pwl given n-chords
+  begin
+    with pwlist = {}
+    loop
+      for i from 0 below length(mapping)
+      set hz-pair = nth(i, mapping), time-shift = onset-time + shift-dur
+      set pwlist &= list(time-shift, nth(1, hz-pair), time-shift + chord-dur - 0.5 * shift-dur, nth(1, hz-pair))
+    end
+    return pwlist
+  end
+
+
+function _add-chord-pwl(mapping, pwlist, i-chord, seg-dur, shift-dur)
+  ; Not intended to be used on its own - you may want to call `connect-chords`
+  ; @param pwl-func: hz shape, which will be appended in place
+  ;                  it should be of the same size as chord1's
+  ;                  and inited by calling _init-chord-pwl
+  ; @param i-chord: idx of current chord pair (c0-c1's idx is 0)
+  ; @param seg-dur: duration for 1 chord (calculated from total-dur / chord-num)
+  begin
+    with out = {}, shift-t = i-chord * seg-dur + shift-dur / 2.0
+    loop
+      for i from 0 below length(mapping)
+      ; compare pairs to append to pwl-list
+      ;|
+      ;|````\     /```\     /````
+      ;|     \___/     \___/
+      ;|_______________________________
+      ;|     |    |    |    |
+      ;|*|*** **** **** ****
+      ;|(1+4)k 4k   4k   4k
+      ;| Therefore, the final single pwl function should be:
+      ;| pwl_final = [pre] + [hz0-hz1] + [hz1-hz2] + ....
+      set hz-pair = nth(i, mapping), pwl-curr = nth(i, pwlist)
+      set out &= _bridge-pitch(nth(0, hz-pair), nth(1, hz-pair), seg-dur, shift-dur, shift-t)
+    end
+    return out
+  end
+
+  function _add-vtchord-pwl(mapping, pwlist, onset-time, chord-dur, shift-dur)
+  ; Not intended to be used on its own - you may want to call `connect-chords`
+  ; This revised _add_chord_pwl to allow different seg-dur passed in, at the cost of
+  ;   managing the shifted duration on your own.
+  ; @param pwl-func: hz shape, which will be appended in place
+  ;                  it should be of the same size as chord1's
+  ;                  and inited by calling _init-chord-pwl
+  ; @param i-chord: idx of current chord pair (c0-c1's idx is 0)
+  ; @param seg-dur: duration for 1 chord (calculated from total-dur / chord-num)
+  begin
+    with out = {}, shift-t = onset-time + shift-dur / 2.0
+    loop
+      for i from 0 below length(mapping)
+      ; compare pairs to append to pwl-list
+      ;|
+      ;|````\     /```\     /````
+      ;|     \___/     \___/
+      ;|_______________________________
+      ;|     |    |    |    |
+      ;|*|*** **** **** ****
+      ;|(1+4)k 4k   4k   4k
+      ;| Therefore, the final single pwl function should be:
+      ;| pwl_final = [pre] + [hz0-hz1] + [hz1-hz2] + ....
+      set hz-pair = nth(i, mapping), pwl-curr = nth(i, pwlist)
+      set out &= _bridge-pitch(nth(0, hz-pair), nth(1, hz-pair), chord-dur, shift-dur, shift-t)
+    end
+    return out
+  end
+
+;;;;;;;;;;;
+;; Debug ;;
+; print _add-chord-pwl(list(list(2,3), list(3,4)), test-pwl, 0, 1, 0.1)
+; play connect-chord-list(list(list(440, 440 * 1.5), list(440 * 1.5, 440 * 1.5 * 1.5)))
+
+function connect-chord-list(chord-list, seg-dur: 1, shift-dur: 0.2, synth: quote(hzosc))
+  ;; input a list of chords, output a sound with all the chords smoothly voice-led and fm-connected
+  ; seg-dur: duration of each chord (segment)
+  begin
+    with initial-map = voice-lead(nth(0, chord-list), nth(1, chord-list)), hz-breakpoints = _init-chord-pwl(initial-map, shift-dur)
+    ;; Loop each chord to create the hz-breakpoints
+    loop
+      for i from 0 below length(chord-list) - 1
+      ; compare pairs to append to pwl-list
+      if length(nth(i, chord-list)) != length(nth(i + 1, chord-list)) then
+        exec throw("We do not support chords of different length...")
+      set curr-map = voice-lead(nth(i, chord-list), nth(i + 1, chord-list))
+      set tmp-out = _add-chord-pwl(curr-map, hz-breakpoints, i, seg-dur, shift-dur)
+      set tmp-list = {} 
+      loop
+        ;; Because I am not smart enough to understand Lisp and car/cdr.
+        ;; I have to do this silly-looking substitution code.
+        for i from 0 below length(tmp-out)
+        set tmp-list &= append(nth(i, hz-breakpoints), nth(i, tmp-out))
+      end
+      print "[DEBUG] tmp-list: ", tmp-list
+      set hz-breakpoints = tmp-list
+      
+      if i = length(chord-list) - 2 then
+        begin
+          with tmp-final = _end-chord-pwl(curr-map, seg-dur, shift-dur, length(chord-list)), tmp-list = {}
+          loop
+            ;; Because I am not smart enough to understand Lisp and car/cdr.
+            ;; I have to do this silly-looking substitution code.
+            for i from 0 below length(tmp-final)
+            set tmp-list &= append(nth(i, hz-breakpoints), nth(i, tmp-final))
+          end
+          set hz-breakpoints = tmp-list
+        end
+    end
+    
+    ;; Loop each hz in the list to output sound
+    print "[INFO] hz-breakpoints total:", hz-breakpoints
+    set out-sound = dummy-sound()
+    loop 
+      for i from 0 below length(hz-breakpoints)
+      set out-sound += funcall(synth, pwl-list(nth(i, hz-breakpoints)))
+    end
+    return out-sound
+  end
+
+function vl-chords(chord-list, shift-dur: 0.8, seg-dur: {}, synth: quote(hzosc))
+  ;; input a list of chords, output a sound with all the chords smoothly voice-led and fm-connected
+  ; seg-dur: duration of each chord (segment)
+  begin
+    with initial-map = voice-lead(nth(0, chord-list), nth(1, chord-list)), hz-breakpoints = _init-chord-pwl(initial-map, shift-dur), curr-onset = 0
+    ;; Loop each chord to create the hz-breakpoints
+    loop
+      for i from 0 below length(chord-list) - 1
+      ; compare pairs to append to pwl-list
+      if length(nth(i, chord-list)) != length(nth(i + 1, chord-list)) then
+        exec throw("We do not support chords of different length...")
+      set curr-map = voice-lead(nth(i, chord-list), nth(i + 1, chord-list))
+      if length(seg-dur) = 0 then
+        set seglen = 1
+      else
+        set seglen = nth(i, seg-dur)      
+      set tmp-out = _add-vtchord-pwl(curr-map, hz-breakpoints, curr-onset, seglen, shift-dur)
+      set tmp-list = {} 
+      loop
+        ;; Because I am not smart enough to understand Lisp and car/cdr.
+        ;; I have to do this silly-looking substitution code.
+        for i from 0 below length(tmp-out)
+        set tmp-list &= append(nth(i, hz-breakpoints), nth(i, tmp-out))
+      end
+      ; print "[DEBUG] tmp-list: ", tmp-list
+      set hz-breakpoints = tmp-list
+      set curr-onset += seglen
+      if i = length(chord-list) - 2 then
+        begin
+          with tmp-final = _end-vi-chord-pwl(curr-map, seglen, curr-onset, shift-dur, length(chord-list)), tmp-list = {}
+          loop
+            ;; Because I am not smart enough to understand Lisp and car/cdr.
+            ;; I have to do this silly-looking substitution code.
+            for i from 0 below length(tmp-final)
+            set tmp-list &= append(nth(i, hz-breakpoints), nth(i, tmp-final))
+          end
+          set hz-breakpoints = tmp-list
+        end
+    end
+    
+    ;; Loop each hz in the list to output sound
+    ; print "[INFO] hz-breakpoints total:", hz-breakpoints
+    set out-sound = dummy-sound()
+    loop 
+      for i from 0 below length(hz-breakpoints)
+      set out-sound += funcall(synth, pwl-list(nth(i, hz-breakpoints)))
+    end
+    return out-sound
+  end

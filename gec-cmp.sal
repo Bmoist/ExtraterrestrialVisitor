@@ -1,0 +1,555 @@
+load "crazy-chords.sal"
+load "sounds.sal"
+load "harmony.sal"
+load "microtone.sal"
+load "utils.sal"
+
+function check-intv(intv)
+  begin
+    if length(intv) != 3 then
+      begin
+        print("Intv format is flawed. Format: {{time-idx} {hz-list} {intv-idx}
+             }")
+        return #f
+      end
+    if length(nth(0, intv)) != length(nth(1, intv)) | length(nth(1, intv)) != length(nth(2, intv)) then
+      begin
+        print("Intv elements should have the same size!")
+        return #f
+      end
+    return #t
+  end
+
+function fio-chord(hzcrd, dur-ratio: 1, synth: quote(hzosc), fd-ratio: 0.9)
+  begin
+    with out = pwl(0)
+    loop
+      for i from 0 below length(hzcrd)
+      set out += funcall(synth, nth(i, hzcrd)) ~ dur-ratio
+    end
+    return fio-sound(out, fd-ratio: fd-ratio)
+  end
+
+function fio-chord-list(e-hzchords, time-idx, dur: 2, synth: quote(hzosc))
+  ; return a chord sound(duration shifted), with fade in and out
+  ; @param e-hzchord: list of hz-pitches
+  ; @param time-idx: seconds, estimated consonant onset time
+  ; @param dur: duration of the sound
+  ; @param synth: synthesizer / timbre/adsr control
+  begin
+    with shifts = dur / 2.0, out-sound = dummy-sound(), init-chord = -(dur) * 0.8
+    loop
+      for i from 0 below length(e-hzchords)
+      ;print "sound,",  fio-sound(funcall(synth, nth(i, e-hzchords)) ~ dur)
+      if i = 0 then
+        set out-sound += (fio-sound(funcall(synth, nth(i, e-hzchords)) ~ (dur + init-chord)) @ max(0, (time-idx - dur * 0.8)))
+      else
+        set out-sound += (fio-sound(funcall(synth, nth(i, e-hzchords)) ~ dur) @ max(0, (time-idx - dur * 0.8)))
+    end
+    return out-sound
+  end
+
+function get-ratio(num-list)
+  return (nth(0, num-list) + 0.0) / nth(1, num-list)
+
+function print-intv(intv-list)
+  ; print intv-list content
+  begin
+    loop
+      for i from 0 below length(nth(0, intv-list))
+      print "time:", nth(i, nth(0, intv-list)), "ratio:", get-ratio(nth(i, nth(1, intv-list))), "hz-pair:", nth(i, nth(1, intv-list)), "name: ",  nth(nth(i, nth(2, intv-list)), ji-intv-names)
+    end
+  end
+
+function parse-base-hz(hz-list)
+  ; @param hz-list: {{440 423} {450 410} ...}, return min of each
+  begin
+    with out = {}
+    loop
+      for i from 0 below length(hz-list)
+      set tmp-pair = nth(i, hz-list)
+      set out &= min(nth(0, tmp-pair), nth(1, tmp-pair))
+    end
+    return out
+  end
+
+function auto-harmonize-ji-intv(intv)
+  ; @param intv: intv data, can only be ji-interval
+  begin
+    with chords = {}
+    loop
+      for i from 0 below length(nth(0, intv))
+      set e = nth(i, nth(2, intv)), c = get-ji-harmony(e); get the interval idx
+      print "autoharm", e, "with", c
+      set chords &= c
+    end
+    print "autoharm:", chords
+    return chords
+  end
+  
+
+function set-chords(intv, filter-name: ji-intv-names)
+  ; interactively select a list of chords
+  ; @param intv: of format interval group
+  ; @param filter-name: this has to be correct!! or study nyquist's structured data
+  begin
+    with -hzchords = {}, tmp-chord = {}, hz-list = nth(1, intv), intv-names = nth(2, intv)
+    if length(hz-list) != length(intv-names) then
+      begin
+        print("set-chords: unmatched length!")
+        exec throw("err")
+      end
+    loop
+      for i from 0 below length(hz-list)
+      print "Current intv:", nth(nth(i, intv-names), filter-name), ", plz input the intervals to be used. Format: (2 4)"
+      exec setq(tmp-chord, read())
+      set -hzchords &= tmp-chord
+    end
+    return -hzchords
+  end
+
+; set intv = interval-filter(pwlv(440, 10, 550), pwlv(440, 10, 330), filter: ji-intervals, time-step: 0.5)
+
+; pwls-sound(a-intv())
+; interval-filter(pwlv(440, 10, 550), pwlv(440, 10, 330), filter: ji-intervals, time-step: 0.5)
+
+function a-sect(base-snd, intv, hz-intvs: {})
+  ; Assume intv with shape: list({time-idx}, {hz-pairs}, {intv-idx})
+  ; @param base-snd: pwl function fed into `interval-filter` function
+  ; @param intv: filtered intervals
+  ; @param hz-intvs: intervals to be combined into chords. If empty, ask user to input before playback
+  begin
+    with out-snd = base-snd, chords = #?(length(hz-intvs) = 0, set-chords(intv), hz-intvs), tmp-hz-chords = hz-chords(parse-base-hz(nth(1, intv)), chords)
+    if check-intv(intv) = #f then
+      exec throw("err")
+    loop
+      ; intv: {time-idx hz-pairs intv-idx}
+      for i from 0 below length(nth(0, intv))
+      set time = nth(i, nth(0, intv))
+      set out-snd += fio-chord-list(nth(i, tmp-hz-chords), time)
+    end
+    return out-snd
+  end
+
+function held-intv-score(base-snd, intv, hold: 1, hz-intvs: {}, auto-harmonize: #f, synth: quote(hzosc), chord-dur: 1)
+  ; Harmonize a "held" intv score:
+  ; before:  /   after:   ___/
+  ;         /            /
+  ;          |            |  |
+  ;        chord         chord  
+  ; @param base-snd: call modified-intf-func to obtain
+  ; @param intv: call interval-filter to obtain
+  ; @param auto-harmonize: overrides hz-intvs, automatically determine
+  ; @param hold: must be the same as "hold" value when you called modified-intf-func
+  ; @param hz-intvs: leave blank for interactive composition, or input your chords if you already know them
+  begin
+    with out-snd = base-snd, chords = #?(length(hz-intvs) = 0 & auto-harmonize = #f, set-chords(intv), hz-intvs), tmp-hz-chords = {}
+    if check-intv(intv) = #f then
+      exec throw("err")
+    ;print "loop size:", length(nth(0, intv))
+    if auto-harmonize then
+      set tmp-hz-chords = hz-chords(parse-base-hz(nth(1, intv)), auto-harmonize-ji-intv(intv))
+    else
+      set tmp-hz-chords = hz-chords(parse-base-hz(nth(1, intv)), chords)
+    loop
+      for i from 0 below length(nth(0, intv))
+      set time = nth(i, nth(0, intv)) + i * hold + #?(i > 0, hold, 0)
+      set out-snd += fio-chord-list(nth(i, tmp-hz-chords), time, dur: chord-dur, synth: synth)
+    end
+    return out-snd
+  end
+  
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; V0.1 - continuous Intv + harmony ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+function test-a-sec()
+  begin
+    ; hz-intvs: intervals to be combined with a hz-chord
+    with dur = 10, f1 = pwlv(440, dur, 550), f2 = pwlv(440, dur, 330), intv = interval-filter(f1, f2, filter: ji-intervals, time-step: 0.5), base-snd = pwls-sound(list(f1, f2)), hz-intvs = {{7 10} {7 10} {7 10} {7 10} {3 10}}
+    return a-sect(base-snd, intv, hz-intvs: hz-intvs)
+  end
+
+
+function a-sec-interactive(dur: 10)
+  begin
+    with f1 = pwlv(440, dur, 550), f2 = pwlv(440, dur, 330), intv = interval-filter(f1, f2, filter: ji-intervals, time-step: 0.5, cool-down: 6), base-snd = pwls-sound(list(f1, f2))
+    exec print-intv(intv)
+    return a-sect(base-snd, intv)
+  end
+
+; play test-a-sec()
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; V0.2 - held pwl intv + harmony ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+function demo-intv(pstart: 659.255, pend1: 659.255 + 100, pend2: 659.255 - 100, dur: 10, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1)
+  return interval-filter(pwlv(pstart, dur, pend1), pwlv(pstart, dur, pend2), cool-down: cool-down, filter: ji-intervals, tolerance: tolerance, time-step: time-step, hold: hold)
+
+function demo-hintv(pstart: 659.255, pend1: 659.255 + 100, pend2: 659.255 - 100, dur: 10, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1)
+  return modified-intf-func(pwlv(pstart, dur, pend1), pwlv(pstart, dur, pend2), cool-down: cool-down, filter: ji-intervals, tolerance: tolerance, time-step: time-step, hold: hold)
+
+;; hold-intv
+function intv-ext-end(pstart: 659.255, pend1: 659.255 + 100, pend2: 659.255 - 100, ext-dur: 3, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1)
+  return interval-filter(pwlv(pstart, dur, pend1, dur + ext-dur, pend1), pwlv(pstart, dur, pend2, dur + ext-dur, pend2), cool-down: cool-down, t-stop: t-stop, filter: ji-intervals, tolerance: tolerance, time-step: time-step, hold: hold)
+
+function hintv-ext-end(pstart: 659.255, pend1: 659.255 + 100, pend2: 659.255 - 100, ext-dur: 3, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1)
+  return modified-intf-func(pwlv(pstart, dur, pend1, dur + ext-dur, pend1), pwlv(pstart, dur, pend2, dur + ext-dur, pend2), t-stop: t-stop, cool-down: cool-down, filter: ji-intervals, tolerance: tolerance, time-step: time-step, hold: hold)
+
+function sum-snd-list(arr)
+  begin
+    with out = pwl(0)
+    loop
+      for i from 0 below length(arr)
+      set out += nth(i, arr)
+    end
+    return out
+  end
+
+; Linear pwl showcase
+function demo1(pstart: 659.255, pend1: 659.255 * 2, pend2: 659.255 / 2, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1, synth: quote(syn-celesta), chord-dur: 3, auto-harmonize: #t)
+  begin
+    with base-sound = fc-sound(demo-hintv(pstart: pstart, pend1: pend1, pend2: pend2, dur: dur, t-stop: t-stop, cool-down: cool-down, hold: hold, tolerance: tolerance, time-step: time-step), synth: synth), intv = demo-intv(pstart: pstart, pend1: pend1, pend2: pend2, dur: dur, cool-down: cool-down, hold: hold, tolerance: tolerance, time-step: time-step)
+    return held-intv-score(base-sound, intv, hz-intvs: {}, auto-harmonize: auto-harmonize, chord-dur: chord-dur, synth: synth, hold: hold)
+  end
+
+function unison-start-octave-stop(pstart: 659.255, pend1: 659.255 * 2, pend2: 659.255 / 2, ext-dur: 3, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1, synth: quote(elec-tube), chord-dur: 3, auto-harmonize: #t, hz-intvs: {})
+  begin
+    with base-sound = fc-sound(hintv-ext-end(pstart: pstart, pend1: pend1, pend2: pend2, ext-dur: ext-dur, dur: dur, t-stop: t-stop, cool-down: cool-down, hold: hold, tolerance: tolerance, time-step: time-step), synth: synth), intv = intv-ext-end(pstart: pstart, pend1: pend1, pend2: pend2, ext-dur: ext-dur, dur: dur, t-stop: t-stop, cool-down: cool-down, hold: hold, tolerance: tolerance, time-step: time-step)
+    exec print-intv(intv)
+    return held-intv-score(base-sound, intv, hz-intvs: hz-intvs, auto-harmonize: auto-harmonize, chord-dur: chord-dur, synth: synth, hold: hold)
+  end
+
+;play unison-start-octave-stop(dur: 20, ext-dur: 5, cool-down: 1, time-step: 0.1, chord-dur: 3, hold: 0.5)
+
+; set hintv-snd = held-intv-score(fc-sound(demo-hintv(), synth: quote(syn-celesta)), demo-intv(), hz-intvs: {}, synth: quote(syn-celesta), chord-dur: 4, auto-harmonize: #t)
+
+function a-sect-harmony()
+  return unison-start-octave-stop(dur: 20, ext-dur: 5, t-stop: 24, cool-down: 1.5, time-step: 0.1, chord-dur: 3, hold: 1, auto-harmonize: #f, hz-intvs: {{7 11 16} {2 5 9} {9 16} {4 10 14} {4 11} {4 8 16} {5 9 16} {8 12} {8 12 15} {5 8 14} {6 9 14} {4 7 11} {5 8 14} {6 9 16}}, synth: quote(syn-celesta))
+
+function hedwig-motif(hz-root: 0, ratio: 1)
+  ; Opening melody
+  begin
+    with score = {
+            {0 1 {cel-note :pitch e6 :vel 74}}
+            {1.5 0.5 {cel-note :pitch g6 :vel 86}}
+            {2 1 {cel-note :pitch fs6 :vel 99}}
+            {3 1 {cel-note :pitch e6 :vel 104}}
+            {5 1 {cel-note :pitch b6 :vel 93}}
+            {6 1 {cel-note :pitch a6 :vel 84}}
+                 }, tr = hz-to-step(hz-root) - e6
+    if hz-root != 0 then
+      begin
+        print "transpose: ", tr
+        set score = score-transpose(score, pitch: tr)
+      end
+    set score = score-stretch(score, ratio)
+    return score
+  end
+
+function hedwig-motif2(hz-root: 0, ratio: 1)
+  ; Opening melody twist
+  begin
+    with score = {
+            {0 1 {cel-note :pitch e6 :vel 74}}
+            {1.5 0.5 {cel-note :pitch g6 :vel 86}}
+            {2 1 {cel-note :pitch fs6 :vel 99}}
+            {3 1 {cel-note :pitch e6 :vel 104}}
+            {5 1 {cel-note :pitch b6 :vel 93}}
+            {6 1 {cel-note :pitch d7 :vel 84}}
+                 }, tr = hz-to-step(hz-root) - e6
+    if hz-root != 0 then
+      begin
+        print "transpose: ", tr
+        set score = score-transpose(score, pitch: tr)
+      end
+    set score = score-stretch(score, ratio)
+    return score
+  end
+
+function hedwig-motif-mj(onset-t, dur-ratio, hz-root: 0)
+  ; melody twist
+  begin
+    with score-begin = onset-t - 3 * dur-ratio, score = {
+            {0 1 {cel-note :pitch e6 :vel 74}}
+            {1.5 0.5 {cel-note :pitch g6 :vel 86}}
+            {2 1 {cel-note :pitch fs6 :vel 99}}
+            {3 1 {cel-note :pitch ds6 :vel 104}}
+            {5 1 {cel-note :pitch f6 :vel 93}}
+            {6 1 {cel-note :pitch b5 :vel 84}}
+                                                        }, tr = hz-to-step(hz-root) - e6
+    if onset-t < 0 then
+      set onset-t = 0
+    if hz-root != 0 then
+      begin
+        print "transpose: ", tr
+        set score = score-transpose(score, pitch: tr)
+      end
+    set score = score-stretch(score, dur-ratio)
+    set score = score-shift(score, score-begin)
+    set score = score-set-begin(score, score-begin)
+    return score
+  end
+
+function hedwig-motif-mj2(onset-t, dur-ratio, hz-root: 0)
+  ; melody twist 2
+  begin
+    with score-begin = onset-t, score = {
+            {0 1 {cel-note :pitch c7 :vel 74}}
+            {1.5 0.5 {cel-note :pitch b6 :vel 86}}
+            {2 1 {cel-note :pitch bf6 :vel 99}}
+            {3 1 {cel-note :pitch b5 :vel 104}}
+            {5 1 {cel-note :pitch g6 :vel 93}}
+            {6 1 {cel-note :pitch e6 :vel 84}}
+                                                        }, tr = hz-to-step(hz-root) - e6
+    if onset-t < 0 then
+      set onset-t = 0
+    if hz-root != 0 then
+      begin
+        print "transpose: ", tr
+        set score = score-transpose(score, pitch: tr)
+      end
+    set score = score-stretch(score, dur-ratio)
+    set score = score-shift(score, score-begin)
+    set score = score-set-begin(score, score-begin)
+    return score
+  end
+
+function env-score(score)
+  return timed-seq(score)
+
+function a-sect-main-melody()
+  begin
+    with m1 = hedwig-motif(ratio: 0.4), m2 = hedwig-motif-mj(6, 0.4, hz-root: 594.978 * 3), m3 = hedwig-motif2(ratio: 0.4, hz-root: 907 * 2), m4 = hedwig-motif-mj2(19, 0.4, hz-root: 449.942 * 3)
+    return env-score(m1) + env-score(m2) + env-score(score-shift(m3, 11)) + env-score(m4) + env-score(score-shift(hedwig-motif2(ratio: 0.4, hz-root: 750 * 2), 17)) + env-score(score-shift(hedwig-motif2(ratio: 0.4, hz-root: 529 * 3), 23))
+  end
+
+
+function a-section()
+  begin
+    ;set *autonorm-type* = quote(PREVIOUS)
+    return prcrev(a-sect-main-melody() * 1.1 + a-sect-harmony() * 0.6, 4, 0.5) * pwl(1, 1, 36, 1, 39)
+  end
+
+
+
+function b-harmony()
+  begin
+    set c1 = list(nhz-chord(e5, {7 11 16 19}),
+                  nhz-chord(fs5, {3 7 9 12}, hz-shift: -10),
+                  nhz-chord(e5, {7 11 16 19}, hz-shift: 3),
+                  nhz-chord(d5, {7 10 14 18}, hz-shift: -8)
+                 )
+    set c1-dur = {2 2 2 2}
+
+    set c2 = list(nhz-chord(e5, {7 11 16 19}), ; Root
+                  nhz-chord(gs5, {3 7 8 15}),  ; p1
+                  nhz-chord(gs5, {3 6 8 15}, hz-shift: -23.645), ; p2
+                  nhz-chord(g5, {3 6 10 14}), ; p3
+                  nhz-chord(g5, {3 6 10 14}, hz-shift: -22.3187), ; p4
+                  nhz-chord(fs5, {3 7 10 14}), ; ii
+                  nhz-chord(b4, {7 10 16 19}) ; V
+                 )
+    set c2-dur = {2 1 1 1 1 1 1}
+    
+    set c3 = list(nhz-chord(e5, {7 11 16 19}),
+                  nhz-chord(fs5, {3 7 9 12}, hz-shift: 10),
+                  nhz-chord(e5, {7 11 16 19}, hz-shift: 0),
+                  nhz-chord(d5, {7 10 14 18}, hz-shift: -8)
+                 )
+    set c3-dur = {2 2 2 2}
+    
+    set c4 = list(nhz-chord(e5, {4 7 11 16}, hz-shift: 30),
+                  nhz-chord(e5, {2 5 9 12}, hz-shift: 15),
+                  nhz-chord(e5, {2 5 8 12}, hz-shift: 0)
+                 )
+    set c4-dur = {2 2 4}
+    
+    set c5 = list(nhz-chord(e5, {0 0 12 12}))
+    set c5-dur = {3}
+    
+    set chords =  append(c1, c2, c3, c4, c5)
+    set durs = append(c1-dur, c2-dur, c3-dur, c4-dur, c5-dur)
+    return vl-chords(chords, shift-dur: 0.3, seg-dur: durs)
+  end
+
+; load "pianosyn.lsp"
+
+function piano(pitch: 60, vel: 60)
+    ; Assuming a default duration of 1.0 seconds for each note
+    return piano-note(2.0, pitch, vel)
+
+function bseg-melody()
+  begin
+    return prcrev(timed-seq(newb-melody), 2.0, 0.4)
+  end
+
+set b-melody = {
+            {0 2 {piano :pitch b7 :vel 99}}
+            {2 2 {piano :pitch fs7 :vel 86}}
+            {5 1.5 {piano :pitch b7 :vel 99}}
+            {6.5 0.5 {piano :pitch a7 :vel 87}}
+            {7 1 {piano :pitch gs7 :vel 90}}
+            {8 1 {piano :pitch e7 :vel 60}}
+            {9 2 {piano :pitch fs7 :vel 98}}
+            {11 2 {piano :pitch b6 :vel 82}}
+            {13 1.5 {piano :pitch fs7 :vel 82}}
+            {14.5 0.5 {piano :pitch e7 :vel 74}}
+            {15 1 {piano :pitch ds7 :vel 72}}
+            {16 1 {piano :pitch b6 :vel 70}}
+            {17 2 {piano :pitch b7 :vel 89}}
+            {19 2 {piano :pitch fs7 :vel 74}}
+            {21 1.5 {piano :pitch b7 :vel 82}}
+            {22.5 0.5 {piano :pitch a7 :vel 79}}
+            {23 1 {piano :pitch gs7 :vel 78}}
+            {24 1 {piano :pitch e7 :vel 72}}
+            {25 2 {piano :pitch fs7 :vel 85}}
+            {27 1 {piano :pitch b6 :vel 82}}
+            {28 1 {piano :pitch ds7 :vel 83}}
+            {29 2 {piano :pitch e7 :vel 85}}
+            {31 2 {piano :pitch e7 :vel 78}}
+                                                        }
+
+function bseg-melody()
+  begin
+    set newb-melody = score-transpose(b-melody, keyword(pitch), -12)
+    return prcrev(timed-seq(newb-melody), 2.0, 0.4) * 8
+  end
+
+function b-section()
+  begin
+    return b-harmony() * pwl(1, 1, 35, 1, 36) * 0.15 + bseg-melody() * 0.6
+  end
+
+
+;; hold-intv
+function intv-ext-end2(pstart1: 659.255, pstart2: 659.255 + 100, pend1: 659.255 - 100, pend2: 659, ext-dur: 3, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1)
+  return interval-filter(pwlv(pstart1, dur, pend1, dur + ext-dur, pend1), pwlv(pstart2, dur, pend2, dur + ext-dur, pend2), cool-down: cool-down, t-stop: t-stop, filter: ji-intervals, tolerance: tolerance, time-step: time-step, hold: hold)
+
+function hintv-ext-end2(pstart1: 659.255, pstart2: 659.255 + 100, pend1: 659.255 - 100, pend2: 659, ext-dur: 3, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1)
+  return modified-intf-func(pwlv(pstart1, dur, pend1, dur + ext-dur, pend1), pwlv(pstart2, dur, pend2, dur + ext-dur, pend2), t-stop: t-stop, cool-down: cool-down, filter: ji-intervals, tolerance: tolerance, time-step: time-step, hold: hold)
+
+
+function octave-start-unison-stop(pstart1: 659.255 * 2, pstart2: 659.255, pend1: 659.255, pend2: 659.255 * 2, ext-dur: 3, dur: 10, t-stop: -1, cool-down: 1, hold: 1, tolerance: 0.01, time-step: 1, synth: quote(elec-tube), chord-dur: 3, auto-harmonize: #t, hz-intvs: {})
+  begin
+    with base-sound = fc-sound(hintv-ext-end2(pstart1: pstart1, pstart2: pstart2, pend1: pend1, pend2: pend2, ext-dur: ext-dur, dur: dur, t-stop: t-stop, cool-down: cool-down, hold: hold, tolerance: tolerance, time-step: time-step), synth: synth), intv = intv-ext-end2(pstart1: pstart1, pstart2: pstart2, pend1: pend1, pend2: pend2, ext-dur: ext-dur, dur: dur, t-stop: t-stop, cool-down: cool-down, hold: hold, tolerance: tolerance, time-step: time-step)
+    exec print-intv(intv)
+    return held-intv-score(base-sound, intv, hz-intvs: hz-intvs, auto-harmonize: auto-harmonize, chord-dur: chord-dur, synth: synth, hold: hold)
+  end
+
+
+function ap-sect-harmony()
+  begin
+      return octave-start-unison-stop(dur: 20, ext-dur: 5, t-stop: 24, cool-down: 1.5, time-step: 0.1, chord-dur: 3, hold: 1, auto-harmonize: #t, hz-intvs: {}, synth: quote(elec-tube))
+  end
+
+
+function ap-sect-main-melody()
+  begin
+    with m1 = hedwig-motif(ratio: 0.4), m2 = hedwig-motif-mj(6, 0.4, hz-root: 594.978 * 3), m3 = hedwig-motif2(ratio: 0.4, hz-root: 907 * 2), m4 = hedwig-motif-mj2(19, 0.4, hz-root: 449.942 * 3)
+    return env-score(m1) + env-score(m2) + env-score(score-shift(m3, 11)) + env-score(m4) + env-score(score-shift(hedwig-motif2(ratio: 0.4, hz-root: 750 * 2), 17)) + env-score(score-shift(hedwig-motif2(ratio: 0.4, hz-root: 529 * 3), 23))
+  end
+
+function ap-section()
+  begin
+    return prcrev(ap-sect-main-melody() + ap-sect-harmony(), 4, 0.6) * pwl(0.3, 1, 38, 1, 39)
+  end
+
+function main-theme()
+  ; return a score
+  begin
+    with melody = {
+                   {0 1 {cel-note :pitch e6 :vel 74}}
+                   {1.5 0.5 {cel-note :pitch g6 :vel 86}}
+                   {2 1 {cel-note :pitch fs6 :vel 99}}
+                   {3 1 {cel-note :pitch e6 :vel 104}}
+                   {5 1 {cel-note :pitch b6 :vel 93}} 
+                   {6 3 {cel-note :pitch a6 :vel 84}}
+                   
+                   {12 1 {cel-note :pitch e6 :vel 74}}
+                   {13.5 0.5 {cel-note :pitch g6 :vel 86}}
+                   {14 1 {cel-note :pitch fs6 :vel 99}}
+                   {15 1 {cel-note :pitch ds6 :vel 104}}
+                   {17 1 {cel-note :pitch f6 :vel 93}}
+                   {18 3 {cel-note :pitch b5 :vel 84}}
+                   
+                   {24 1 {cel-note :pitch e6 :vel 74}}
+                   {25.5 0.5 {cel-note :pitch g6 :vel 86}}
+                   {26 1 {cel-note :pitch fs6 :vel 99}}
+                   {27 1 {cel-note :pitch e6 :vel 104}}
+                   {29 1 {cel-note :pitch b6 :vel 93}}
+                   {30 1 {cel-note :pitch d7 :vel 77}}
+                   ;{32 1 {cel-note :pitch cs7 :vel 93}}
+                   {33 1 {cel-note :pitch c7 :vel 83}}
+                   ;{35 1 {cel-note :pitch a6 :vel 83}}
+                   
+                   {36 1 {cel-note :pitch c7 :vel 94}}
+                   {37.5 0.5 {cel-note :pitch b6 :vel 96}}
+                   {38 1 {cel-note :pitch bf6 :vel 99}}
+                   {39 1 {cel-note :pitch b5 :vel 84}}
+                   {41 1 {cel-note :pitch g6 :vel 73}}
+                   {42 1 {cel-note :pitch e6 :vel 64}}
+         }, counter = {
+                       {0 1 {cel-note :pitch e5 :vel 74}}
+                       {6 1 {cel-note :pitch e5 :vel 74}}
+                       {12 1 {cel-note :pitch e5 :vel 74}}
+                       {18 1 {cel-note :pitch e5 :vel 74}}
+                       {24 1 {cel-note :pitch e5 :vel 74}}
+                       {30 1 {cel-note :pitch e5 :vel 74}}
+                       {36 1 {cel-note :pitch e5 :vel 74}}
+                       {42 1 {cel-note :pitch e5 :vel 74}}
+                       {48 1 {cel-note :pitch e5 :vel 0}}
+                       }
+    return score-merge(melody, counter)
+  end
+
+function a-intro()
+  begin
+    return prcrev(fio-sound(timed-seq(main-theme()) ~ 0.4, start: 0.5, fd-ratio: 0.99), 2, 0.5)
+  end
+
+
+function composition()
+  begin
+    with snd = pwl(0)
+    exec autonorm-off()
+    set snd += a-intro() * 1.8
+    set snd += (a-section()) @ 19.7 
+    set snd += (b-section() * 0.5) @ (19.7 + 39)
+    set snd += (ap-section() * 0.8)@ (19.7 + 39 + 35)
+    set snd += (a-intro() * 2) @ (19.7 + 39 + 35 + 39)
+    return snd * 0.35
+  end
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Experimental: sine hintv ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+function demo2-intv(dur: 10)
+  return interval-filter(100 * hzosc(1 / 4.35) ~ dur + 659.255, 100 * hzosc(1 / 6.7) ~ dur + 440, cool-down: 0.3, filter: ji-intervals, tolerance: 0.01, time-step: 0.1)
+
+
+function demo2-hintv(dur: 10)
+  return modified-intf-func(100 * hzosc(1 / 4.35) ~ dur + 659.255, 100 * hzosc(1 / 6.7) ~ dur + 440, cool-down: 0.3, filter: ji-intervals, tolerance: 0.01, time-step: 0.1, hold: 0.2)
+
+
+;set hintv-snd2 = held-intv-score(fc-sound(demo2-hintv(), synth: quote(syn-celesta)), demo2-intv(), hz-intvs: {{4 11} {2 12} {7 10} {3 10} {5 8} {9 16} {7 11 16} {3 10}}, synth: quote(syn-celesta), hold: 0.2)
+
+;set hintv-snd2 = held-intv-score(fc-sound(demo2-hintv(), synth: quote(syn-celesta)), demo2-intv(), hz-intvs: {}, synth: quote(syn-celesta), hold: 0.2, auto-harmonize: #t)
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;
+; Feature Requests ;
+;;;;;;;;;;;;;;;;;;;;
+; [x] modified function - hintv implement (consonance lingers)
+; [x] pwl improvement - no clipping/losing sample points
+;     - use pwl(time, 0, time, 1) instead of pwl(time, 0, time + 0.00001, 1)
+; [ ] exploration: various types of f1, f2, combinations
+; [ ] studies: print out the base hz, see if it fits/approximates a tuning system

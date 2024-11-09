@@ -1,0 +1,190 @@
+load "harmony.sal"
+load "utils.sal"
+
+function fmod(num1, mod, prec: 100000.0)
+  begin
+    return (round(num1 * prec) % round(mod * prec)) / prec
+  end
+
+function ir(hz1, hz2)
+  begin
+    if hz1 = 0 | hz2 = 0 then
+      return 0
+    else
+      return max(hz1, hz2) / min(hz1, hz2)
+  end
+
+function check_float_range(num, val, tolerance: 0.1)
+  begin
+    if num = 0 then
+      return #f
+    ; Check if num is within ±tolerance of val
+    set num-diff = val / 2 - abs(fmod(num, val)- val / 2)
+    return (num-diff <= tolerance)
+  end
+
+function linfreq_gen(start_freq, end_freq, duration)
+  ; Return a sound with pitch = (start~end)
+  begin
+    ; Generate a PWL envelope for frequency change
+    set freq_env = pwl(0, start_freq, duration, end_freq)
+    
+    ; Use the frequency envelope to modulate the frequency of a sinusoidal oscillator
+    ; Assuming the default table for hzosc is a sine wave
+    return hzosc(freq_env)
+  end
+
+function interval-filter(f1, f2, t-stop: -1, filter: ji-intervals, tolerance: 0.01, time-step: 1, cool-down: 1.0)
+  ; filter functions of hz by given interal filter
+  ; @param tolerance: accepted interval ratio error range
+  ; @param time-step: seconds per search step
+  ; @param cool-down: after one pair is found, cool down cd * time-step seconds
+  ; @return: (onset-time, hz pairs, intv-id)
+  begin
+    if time-step <= 0 then
+      begin
+        print("finterval-filter: you can't turn back or stop the clock!")
+        exec throw("err")
+      end
+    if snd-dur(f1) != snd-dur(f2) then
+      begin
+        print("interval-filter: f1 f2 have different duration!")
+        exec throw("err")
+      end
+    if t-stop = -1 then
+      begin
+        set t-stop = snd-dur(f1)
+      end
+    set onset-time = list()  ; Initialize an empty list for set-times
+    set intervals = list() ; Initialize an empty list for intervals
+    set intv-id = {} ; initialize id list for intervals
+    set total-cd = cool-down, cd-time = 0
+    loop 
+      for i from 0 below t-stop by time-step
+      set val1 = sref(f1, i)
+      set val2 = sref(f2, i)
+      ;print i, "values:", val1, val2
+      ; Iterate through the filter list
+      if cd-time > 0 then
+        begin
+          ;print "cd minus:", cd-time
+          set cd-time -= time-step
+        end
+      else
+        begin
+          ;print "dur", i
+          loop 
+            for j from 0 below length(filter)
+            ; Retrieve the interval from the filter list
+            set interval = nth(j, filter)
+            set ratio = ir(val1, val2) ; interval ratio
+            if cd-time <= 0 then
+              begin
+                if check_float_range(ratio, interval, tolerance: tolerance) then
+                begin
+                  ;print "check ratio:", ratio, interval
+                  set cd-time = total-cd
+                  ;print "cd reset at dur:", i
+                  ; Append elements and start cd
+                  set onset-time &= i, intervals &= list(val1, val2), intv-id &= j
+                  ;print "intervals", intervals
+                end
+              end
+          end ; of the interval loop
+        end ; of the else
+    end ; of the duration loop
+    return list(onset-time, intervals, intv-id)
+  end
+
+;;;;;;;;
+; test ;
+;;;;;;;;
+; set f1 = pwlv(440, 10, 550), f2 = pwlv(440, 10, 330)
+; set intv = interval-filter(f1, f2, 10, filter: ji-intervals, time-step: 0.5, cool-down: 2.0)
+
+
+
+function interval_check_pair(val1, val2, filter: tonal_intervals, tolerance: 0.01)
+  begin
+    set ratio = ir(val1, val2)
+    loop 
+      for j from 0 below length(filter)
+      set interval = nth(j, filter)
+      if check_float_range(ratio, interval, tolerance) then
+        return #t
+      else
+        return #f
+    end
+  end
+
+function harmonic_interval_check(f1, f2, f3, duration, filter: ji-intervals, tolerance: 0.01, time-step: 1)
+  begin
+    set harmonic_times = list() ; To store times where all pairs are harmonious
+
+    loop 
+      for i from 0 below duration by time-step
+        set val1 = sref(f1, i)
+        set val2 = sref(f2, i)
+        set val3 = sref(f3, i)
+      
+      ; Check each pair of frequencies for harmonious intervals
+        set pair1_harmony = interval_check_pair(val1, val2, filter: filter, tolerance: tolerance)
+        set pair2_harmony = interval_check_pair(val2, val3, filter: filter, tolerance: tolerance)
+        set pair3_harmony = interval_check_pair(val1, val3, filter: filter, tolerance: tolerance)
+        ; If all pairs are harmonious, record the time
+      if (pair1_harmony & pair2_harmony & pair3_harmony) then
+        set harmonic_times &= i
+    end
+    return harmonic_times
+  end
+
+
+
+;set result = harmonic_interval_check(pwl(0, 440, 10, 880), pwl(0, 440, 10, 880), pwl(0, 220, 10, 440), 10, time-step: 1, tolerance: 0.01)
+
+;set sound-lin1 = linfreq_gen(440, 880, 10)
+;set sound-lin2 = linfreq_gen(1, 440, 10)
+
+;set result = interval-filter(pwl(0, 440, 10, 880), pwl(0, 440, 10, 1), 10, time-step: 2)
+
+function insert-hold(func, time, dur)
+  ; insert a horizontal line at time for dur into func
+  begin
+    ; split sound into two, add between
+    with out-part1 = func * pwlv(1, time, 1, time, 0, snd-dur(func), 0), out-part2 = (pwl(0) + shift-time(func, dur)) * (pwl(0) + shift-time(pwl(time, 0, time, 1, snd-dur(func), 1), dur)), hold = pwlv(sref(func, time), dur, sref(func, time))
+    return out-part1 + out-part2 + shift-time(hold, time)
+  end
+
+
+function modified-intf-func(f1, f2, t-stop: -1, hold: 1, cool-down: 1.0, filter: ji-intervals, tolerance: 0.01, time-step: 1)
+  ; Insert `hold` to input functions where ratios between them are in the filter
+  ; @param f1: function 1
+  ; @param f2: function 2
+  ; @param t-stop: time to stop filtering
+  ; @param hold: linger on the filtered ratios for k seconds
+  ; @param cool-down: when a target ratio is found, wait k seconds to start searching the next target ratio.
+  ; @param filter: list of target ratios
+  ; @param tolerance: filter tolerance
+  ; @param time-step: search per k seconds
+  begin
+    if snd-dur(f1) != snd-dur(f1) then
+      begin
+        print("F1 f2 duration unequal")
+        exec throw("err")
+      end
+    if t-stop = -1 then
+      begin
+        set t-stop = snd-dur(f1)
+      end
+    set intv = interval-filter(f1, f2, t-stop: t-stop, cool-down: cool-down, filter: filter, tolerance: tolerance, time-step: time-step), onsets = nth(0, intv), hz-pairs = nth(1, intv), tmp-time-shift = 0
+    ; format: { onsets, pairs, intv-indices }
+    loop
+      for i from 0 below length(nth(0, intv))
+      set ons = nth(i, onsets) + tmp-time-shift
+      ;print "ogons:", nth(i, onsets), "ons:", ons, "target hold:", nth(i, hz-pairs)
+      set f1 = insert-hold(f1, ons, hold), f2 = insert-hold(f2, ons, hold), tmp-time-shift += hold
+    end
+    return list(f1, f2)
+  end
+
+

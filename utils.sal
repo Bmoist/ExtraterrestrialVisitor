@@ -1,0 +1,28 @@
+function snd-dur(snd, max-sec: 60)
+  ; calculate the duration of the input sound in seconds
+  begin
+    with s-rate = snd-srate(snd)
+    return (snd-length(snd, round(max-sec * s-rate)) + 0.0) / s-rate
+  end
+
+function fio-sound(snd, fd-ratio: 0.8, start: 0, top: 1)
+  ; fade in and fade out a sound (quadratic fade)
+  ; @param fd-ratio: percent of total duration used for fade in/out operation
+  ; @param start: starting volume percent
+  ; @param top: top volume percent
+  begin
+    with total-dur = snd-dur(snd), fi-end = fd-ratio / 2.0 * total-dur, fo-start = total-dur - fd-ratio / 2.0 * total-dur
+    return snd * (pwlv(start, fi-end, 1, fo-start, 1, total-dur) * pwl(fi-end, 1, fo-start, 1, total-dur, start))
+  end
+
+function fc-sound(func-list, synth: quote(hzosc))
+  ; combine lists of functions representing pitch into a sound
+  ; @param func-list: list of functions
+  begin
+    with snd = pwl(0)
+    loop
+      for i from 0 below length(func-list)
+      set snd += funcall(synth, nth(i, func-list))
+    end
+  return snd
+  end
